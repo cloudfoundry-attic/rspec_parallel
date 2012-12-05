@@ -6,36 +6,54 @@ require 'thread'
 require 'rexml/document'
 include REXML
 include ColorHelpers
+include Interactive
 
 class Rspec_parallel
 
-  MAX_RERUN_TIMES = 10
+  attr_reader         :case_number
+  attr_reader         :failure_number
+  attr_reader         :pending_number
+  attr_reader         :case_info_list
+
+  attr_accessor       :thread_number
+  attr_accessor       :max_rerun_times
+  attr_accessor       :max_thread_number
 
   def initialize(options = {})
     @options = {:thread_number => 4, :case_folder => "./spec/", :report_folder => "./reports/",
                 :filter => {}, :env_list => [], :show_pending => false, :rerun => false,
-                :separate_rerun_report => true}.merge(options)
+                :separate_rerun_report => true, :max_rerun_times => 10, :max_thread_number => 16}.merge(options)
+    @thread_number = @options[:thread_number]
+    @max_rerun_times = @options[:max_rerun_times]
+    @max_thread_number = @options[:max_thread_number]
+
+    @case_number = 0
+    @failure_number = 0
+    @pending_number = 0
   end
 
   def run_tests()
     start_time = Time.now # timer of rspec task
+    interrupted = false # whether there is a interrupt
     @queue = Queue.new # store all tests to run
     @case_info_list = [] # store results of all tests
     @lock = Mutex.new # use lock to avoid output mess up
 
-    thread_number = @options[:thread_number]
-    if thread_number < 1
-      puts red("threads_number can't be less than 1")
+    if @thread_number < 1
+      puts red("thread_number can't be less than 1")
       exit(1)
+    elsif @thread_number > @max_thread_number
+      puts red("thread_number can't be greater than #{@max_thread_number}")
+      return
     end
-    puts yellow("threads number: #{thread_number}\n")
+    puts yellow("threads number: #{@thread_number}\n")
 
     rerun = @options[:rerun]
     separate_rerun_report = @options[:separate_rerun_report]
     if rerun && separate_rerun_report
       @report_folder = get_rerun_folder(true)
-      if @report_folder.include? "rerun#{MAX_RERUN_TIMES + 1}"
-        puts yellow("rerun task has been executed for #{MAX_RERUN_TIMES}" +
+      if @report_folder.include? "rerun#{@max_rerun_times + 1}"
+        puts yellow("rerun task has been executed for #{@max_rerun_times}" +
                     " times, maybe you should start a new run")
         exit(1)
       end
@@ -57,16 +75,13 @@ class Rspec_parallel
 
     pbar = ProgressBar.new("0/#{@queue.size}", @queue.size, $stdout)
     pbar.format_arguments = [:title, :percentage, :bar, :stat]
-    case_number = 0
-    failure_number = 0
-    pending_number = 0
     failure_list = []
     pending_list = []
 
     Thread.abort_on_exception = false
     threads = []
 
-    thread_number.times do |i|
+    @thread_number.times do |i|
       threads << Thread.new do
         until @queue.empty?
           task = @queue.pop
@@ -88,26 +103,26 @@ class Rspec_parallel
 
           if case_info['status'] == 'fail'
             @lock.synchronize do
-              failure_number += 1
+              @failure_number += 1
               failure_list << case_info
 
               # print failure immediately during the execution
               $stdout.print "\e[K"
-              if failure_number == 1
+              if @failure_number == 1
                 $stdout.print "Failures:\n\n"
               end
-              puts "  #{failure_number}) #{case_info['test_name']}"
+              puts "  #{@failure_number}) #{case_info['test_name']}"
               $stdout.print "#{red(case_info['error_message'])}"
               $stdout.print "#{cyan(case_info['error_stack_trace'])}"
               $stdout.print red("     (Failure time: #{Time.now})\n\n")
             end
           elsif case_info['status'] == 'pending'
             @lock.synchronize do
-              pending_number += 1
+              @pending_number += 1
               pending_list << case_info
             end
           end
-          case_number += 1
+          @case_number += 1
           pbar.inc
           pbar.instance_variable_set("@title", "#{pbar.current}/#{pbar.total}")
         end
@@ -116,12 +131,16 @@ class Rspec_parallel
       sleep 0.1
     end
 
-    threads.each { |t| t.join }
+    begin
+      threads.each { |t| t.join }
+    rescue Interrupt
+      interrupted = true
+    end
     pbar.finish
 
     # print pending cases if configured
     show_pending = @options[:show_pending]
-    if show_pending && pending_number > 0
+    if show_pending && @pending_number > 0
       $stdout.print "\n"
       puts "Pending:"
       pending_list.each {|case_info|
@@ -133,13 +152,13 @@ class Rspec_parallel
     # print total time and summary result
     end_time = Time.now
     puts "\nFinished in #{format_time(end_time-start_time)}\n"
-    if failure_number > 0
-      $stdout.print red("#{case_number} examples, #{failure_number} failures")
-      $stdout.print red(", #{pending_number} pending") if pending_number > 0
-    elsif pending_number > 0
-      $stdout.print yellow("#{case_number} examples, #{failure_number} failures, #{pending_number} pending")
+    if @failure_number > 0
+      $stdout.print red("#{@case_number} examples, #{@failure_number} failures")
+      $stdout.print red(", #{@pending_number} pending") if @pending_number > 0
+    elsif @pending_number > 0
+      $stdout.print yellow("#{@case_number} examples, #{@failure_number} failures, #{@pending_number} pending")
     else
-      $stdout.print green("#{case_number} examples, 0 failures")
+      $stdout.print green("#{@case_number} examples, 0 failures")
     end
     $stdout.print "\n"
 
@@ -153,6 +172,10 @@ class Rspec_parallel
     end
 
     generate_reports(end_time - start_time, rerun && !separate_rerun_report)
+
+    if interrupted
+      raise Interrupt
+    end
   end
 
   def get_case_list
@@ -287,7 +310,7 @@ class Rspec_parallel
 
   def get_rerun_folder(get_next=false)
     rerun_folder = @options[:report_folder]
-    i = MAX_RERUN_TIMES
+    i = @max_rerun_times
     while(i > 0)
       if File.exists? File.join(rerun_folder, "rerun#{i}")
         if get_next
