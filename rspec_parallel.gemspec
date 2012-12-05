@@ -1,7 +1,7 @@
 Gem::Specification.new do |s|
   s.name        = 'rspec_parallel'
-  s.version     = '0.1.2'
-  s.date        = '2012-11-27'
+  s.version     = '0.1.3'
+  s.date        = '2012-12-05'
   s.summary     = "rspec parallel"
   s.description = "parallel all rspec examples"
   s.author       = "VMware"
