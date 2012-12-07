@@ -6,7 +6,6 @@ require 'thread'
 require 'rexml/document'
 include REXML
 include ColorHelpers
-include Interactive
 
 class Rspec_parallel
 
