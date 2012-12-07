@@ -1,0 +1,7 @@
+Code-Review+2: Pin Xie <pxie@vmware.com>
+Verified+1: Michael Zhang <zhangcheng@rbcon.com>
+Submitted-by: Michael Zhang <zhangcheng@rbcon.com>
+Submitted-at: Fri, 07 Dec 2012 07:55:47 +0000
+Reviewed-on: http://reviews.cloudfoundry.org/12219
+Project: rspec_parallel
+Branch: refs/heads/master
