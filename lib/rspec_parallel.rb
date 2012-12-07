@@ -14,6 +14,7 @@ class Rspec_parallel
   attr_reader         :failure_number
   attr_reader         :pending_number
   attr_reader         :case_info_list
+  attr_reader         :interupt
 
   attr_accessor       :thread_number
   attr_accessor       :max_rerun_times
@@ -30,11 +31,11 @@ class Rspec_parallel
     @case_number = 0
     @failure_number = 0
     @pending_number = 0
+    @interupt = false
   end
 
   def run_tests()
     start_time = Time.now # timer of rspec task
-    interrupted = false # whether there is a interrupt
     @queue = Queue.new # store all tests to run
     @case_info_list = [] # store results of all tests
     @lock = Mutex.new # use lock to avoid output mess up
@@ -134,7 +135,8 @@ class Rspec_parallel
     begin
       threads.each { |t| t.join }
     rescue Interrupt
-      interrupted = true
+      puts yellow("catch Ctrl+C, will exit gracefully")
+      @interupt = true
     end
     pbar.finish
 
@@ -172,10 +174,6 @@ class Rspec_parallel
     end
 
     generate_reports(end_time - start_time, rerun && !separate_rerun_report)
-
-    if interrupted
-      raise Interrupt
-    end
   end
 
   def get_case_list
