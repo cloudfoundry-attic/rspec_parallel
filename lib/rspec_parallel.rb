@@ -22,11 +22,13 @@ class Rspec_parallel
   def initialize(options = {})
     @options = {:thread_number => 4, :case_folder => "./spec/", :report_folder => "./reports/",
                 :filter => {}, :env_list => [], :show_pending => false, :rerun => false,
-                :separate_rerun_report => true, :max_rerun_times => 10, :max_thread_number => 16}.merge(options)
+                :single_report => false, :max_rerun_times => 10, :max_thread_number => 16,
+                :longevity_time => 0}.merge(options)
     @thread_number = @options[:thread_number]
     @max_rerun_times = @options[:max_rerun_times]
     @max_thread_number = @options[:max_thread_number]
 
+    @longevity = @options[:longevity_time]
     @case_number = 0
     @failure_number = 0
     @pending_number = 0
@@ -49,16 +51,18 @@ class Rspec_parallel
     puts yellow("threads number: #{@thread_number}\n")
 
     rerun = @options[:rerun]
-    separate_rerun_report = @options[:separate_rerun_report]
-    if rerun && separate_rerun_report
-      @report_folder = get_rerun_folder(true)
-      if @report_folder.include? "rerun#{@max_rerun_times + 1}"
-        puts yellow("rerun task has been executed for #{@max_rerun_times}" +
+    single_report = @options[:single_report]
+
+    if !single_report && rerun
+      @report_folder = get_single_folder("rerun", true)
+    end
+
+    @report_folder = @options[:report_folder] if @report_folder.nil?
+
+    if @report_folder.include? "rerun#{@max_rerun_times + 1}"
+      puts yellow("rerun task has been executed for #{@max_rerun_times}" +
                     " times, maybe you should start a new run")
-        exit(1)
-      end
-    else
-      @report_folder = @options[:report_folder]
+      exit(1)
     end
 
     filter = @options[:filter]
@@ -172,7 +176,9 @@ class Rspec_parallel
       end
     end
 
-    generate_reports(end_time - start_time, rerun && !separate_rerun_report)
+    #CI: true - update ; default: false - new file
+    generate_reports(end_time - start_time, rerun && single_report)
+
   end
 
   def get_case_list
@@ -305,28 +311,25 @@ class Rspec_parallel
     }
   end
 
-  def get_rerun_folder(get_next=false)
-    rerun_folder = @options[:report_folder]
-    i = @max_rerun_times
-    while(i > 0)
-      if File.exists? File.join(rerun_folder, "rerun#{i}")
-        if get_next
-          rerun_folder = File.join(rerun_folder, "rerun#{i + 1}")
-        else
-          rerun_folder = File.join(rerun_folder, "rerun#{i}")
-        end
-        break
-      end
-      i -= 1
+  def get_single_folder(folder_prefix, get_next=false)
+    report_folder = @options[:report_folder]
+    if folder_prefix == "longevity"
+      i = @longevity
+    elsif folder_prefix == "rerun"
+      folders = Dir.glob("#{report_folder}/rerun*").sort
+      i = folders.last.split("rerun",2).last.to_i
     end
-    if get_next && (rerun_folder.include? "rerun") == false
-      rerun_folder = File.join(rerun_folder, 'rerun1')
+
+    if get_next
+      i = i+1
     end
-    rerun_folder
+
+    folder = File.join(report_folder, folder_prefix+"#{i.to_s}")
+
   end
 
   def get_failed_cases
-    if @options[:separate_rerun_report]
+    if @options[:single_report]
       last_report_folder = get_rerun_folder
       last_report_file_path = File.join(last_report_folder, "junitResult.xml")
     else
@@ -471,13 +474,11 @@ class Rspec_parallel
   def generate_reports(time, update_report)
     %x[mkdir #{@report_folder}] unless File.exists? @report_folder
     @summary_report = ""
-    @summary_report += "<?xml version='1.0' encoding='UTF-8'?>\n"
-    @summary_report += "<result>\n"
-    @summary_report += "<suites>\n"
 
     class_name_list = []
     @case_info_list.each do |case_info|
-      class_name_list << case_info['class_name']
+      class_name = case_info['class_name']
+      class_name_list << class_name
     end
     class_name_list.uniq!
     class_name_list.sort!
@@ -488,26 +489,44 @@ class Rspec_parallel
           temp_case_info_list << case_info
         end
       end
-      generate_single_file_report(temp_case_info_list)
+      #CI: should insert into file while single_report == true
+      generate_single_file_report(temp_case_info_list, @longevity > 1 && @options[:single_report])
     end
 
     if update_report
       update_ci_report
     end
 
-    @summary_report += "</suites>\n"
-    @summary_report += "<duration>#{time}</duration>\n"
-    @summary_report += "<keepLongStdio>false</keepLongStdio>\n"
-    @summary_report += "</result>\n"
+    summary_end = "</suites>\n"
+    summary_end += "<duration>#{time}</duration>\n"
+    summary_end += "<keepLongStdio>false</keepLongStdio>\n"
+    summary_end += "</result>\n"
+
 
     report_file_path = File.join(@report_folder, 'junitResult.xml')
-    fr = File.new(report_file_path, 'w')
-    if update_report
+
+    if @longevity > 1 && @options[:single_report]
+      temp_file = File.open(report_file_path, 'r+')
+      content = temp_file.read
+      report = content.split("</suites>",2).first
+      report += @summary_report
+      temp_file.close
+      fr = File.new(report_file_path, 'w')
+      fr.puts report
+      fr.puts summary_end
+    elsif update_report
+      fr = File.new(report_file_path, 'w')
       fr.puts @doc
     else
+      fr = File.new(report_file_path, 'w')
+      fr.puts "<?xml version='1.0' encoding='UTF-8'?>"
+      fr.puts "<result>"
+      fr.puts "<suites>"
       fr.puts @summary_report
+      fr.puts summary_end
     end
     fr.close
+
   end
 
   def update_ci_report
@@ -535,7 +554,7 @@ class Rspec_parallel
     end
   end
 
-  def generate_single_file_report(case_info_list)
+  def generate_single_file_report(case_info_list, is_update)
     return if case_info_list == []
     class_name = case_info_list[0]['class_name']
     file_name = File.join(@report_folder, class_name.gsub(/:+/, '-') + '.xml')
@@ -583,24 +602,22 @@ class Rspec_parallel
     @summary_report += "<duration>#{suite_duration}</duration>\n"
     @summary_report += "<cases>\n"
 
-    ff = File.new(file_name, 'w')
-    ff.puts '<?xml version="1.0" encoding="UTF-8"?>'
-    ff.puts "<testsuite name=\"#{class_name}\" tests=\"#{case_info_list.size}\" time=\"#{suite_duration}\" failures=\"#{fail_num}\" errors=\"#{error_num}\" skipped=\"#{pending_num}\">"
+    single_output = ""
 
     case_desc_list.each do |case_desc|
       i = case_info_list.index {|c| c['test_desc'] == case_desc}
       case_info = case_info_list[i]
-      test_name = case_info['test_name']
+      test_name = "#{@longevity}-"+case_info['test_name']
       test_name += " (PENDING)" if case_info['status'] == 'pending'
       test_name = test_name.encode({:xml => :attr})
       @summary_report += "<case>\n"
       @summary_report += "<duration>#{case_info['duration']}</duration>\n"
-      @summary_report += "<className>#{case_info['class_name']}</className>\n"
+      @summary_report += "<className>#{class_name}</className>\n"
       @summary_report += "<testName>#{test_name}</testName>\n"
       @summary_report += "<skipped>#{case_info['status'] == 'pending'}</skipped>\n"
 
-      ff.puts "<testcase name=#{test_name} time=\"#{case_info['duration']}\">"
-      ff.puts "<skipped/>" if case_info['status'] == 'pending'
+      single_output += "<testcase name=#{test_name} time=\"#{case_info['duration']}\">\n"
+      single_output += "<skipped/>\n" if case_info['status'] == 'pending'
 
       if case_info['status'] == 'fail'
         @summary_report += "<errorStackTrace>\n"
@@ -619,28 +636,46 @@ class Rspec_parallel
         else
           type = "UnknownError"
         end
-        ff.puts "<failure type=\"#{type}\" message=#{case_info['error_details'].encode({:xml => :attr})}>"
-        ff.puts case_info['error_message'].encode({:xml => :text}).gsub('Failure/Error: ', '')
-        ff.puts case_info['error_stack_trace'].encode({:xml => :text}).gsub('# ', '')
-        ff.puts "</failure>"
-        ff.puts "<rerunCommand>#{case_info['rerun_cmd'].encode({:xml => :text})}</rerunCommand>"
+        single_output += "<failure type=\"#{type}\" message=#{case_info['error_details'].encode({:xml => :attr})}>\n"
+        single_output += case_info['error_message'].encode({:xml => :text}).gsub('Failure/Error: ', '')
+        single_output += case_info['error_stack_trace'].encode({:xml => :text}).gsub('# ', '')
+        single_output += "</failure>\n"
+        single_output += "<rerunCommand>#{case_info['rerun_cmd'].encode({:xml => :text})}</rerunCommand>\n"
       end
       @summary_report += "<failedSince>0</failedSince>\n"
       @summary_report += "</case>\n"
 
-      ff.puts "</testcase>"
+      single_output += "</testcase>\n"
     end
 
     @summary_report += "</cases>\n"
     @summary_report += "</suite>"
+    single_end = "<system-out>\n"
+    single_end += stdout.encode({:xml => :text}) if stdout.length > 0
+    single_end += "</system-out>\n"
+    single_end += "<system-err>\n"
+    single_end += stderr.encode({:xml => :text}) if stderr.length > 0
+    single_end += "</system-err>\n"
+    single_end += "</testsuite>\n"
 
-    ff.puts "<system-out>"
-    ff.puts stdout.encode({:xml => :text}) if stdout.length > 0
-    ff.puts "</system-out>"
-    ff.puts "<system-err>"
-    ff.puts stderr.encode({:xml => :text}) if stderr.length > 0
-    ff.puts "</system-err>"
-    ff.puts "</testsuite>"
+
+    if is_update == true
+      temp_file = File.open(file_name, 'r+')
+      content = temp_file.read
+      content = content.split("<system-out>",2).first
+      content += single_output
+      temp_file.close
+      ff = File.new(file_name, 'w')
+      ff.puts content
+      ff.puts single_end
+    else
+      ff = File.new(file_name, 'w')
+      ff.puts '<?xml version="1.0" encoding="UTF-8"?>'
+      ff.puts "<testsuite name=\"#{class_name}\" tests=\"#{case_info_list.size}\" time=\"#{suite_duration}\" failures=\"#{fail_num}\" errors=\"#{error_num}\" skipped=\"#{pending_num}\">\n"
+      ff.puts single_output
+      ff.puts single_end
+    end
     ff.close
+
   end
 end
