@@ -1,13 +1,17 @@
 #encoding: UTF-8
 $LOAD_PATH << File.dirname(__FILE__)
 require 'progressbar'
-require 'color_helper'
 require 'thread'
+require 'find'
 require 'rexml/document'
 include REXML
-include ColorHelpers
 
-class Rspec_parallel
+require 'rspec_parallel/color_helper'
+require 'rspec_parallel/version'
+include RParallel
+include RParallel::ColorHelpers
+
+class RspecParallel
 
   attr_reader         :case_number
   attr_reader         :failure_number
@@ -40,13 +44,16 @@ class Rspec_parallel
     @queue = Queue.new # store all tests to run
     @case_info_list = [] # store results of all tests
     @lock = Mutex.new # use lock to avoid output mess up
+    @return_message = "ok"
 
     if @thread_number < 1
-      puts red("thread_number can't be less than 1")
-      exit(1)
+      @return_message = "thread_number can't be less than 1"
+      puts red(@return_message)
+      return @return_message
     elsif @thread_number > @max_thread_number
-      puts red("thread_number can't be greater than #{@max_thread_number}")
-      return
+      @return_message = "thread_number can't be greater than #{@max_thread_number}"
+      puts red(@return_message)
+      return @return_message
     end
     puts yellow("threads number: #{@thread_number}\n")
 
@@ -60,9 +67,10 @@ class Rspec_parallel
     @report_folder = @options[:report_folder] if @report_folder.nil?
 
     if @report_folder.include? "rerun#{@max_rerun_times + 1}"
-      puts yellow("rerun task has been executed for #{@max_rerun_times}" +
-                    " times, maybe you should start a new run")
-      exit(1)
+      @return_message = "rerun task has been executed for #{@max_rerun_times}" +
+                        " times, maybe you should start a new run"
+      puts yellow(@return_message)
+      return @return_message
     end
 
     filter = @options[:filter]
@@ -73,8 +81,9 @@ class Rspec_parallel
     end
 
     if @queue.empty?
-      puts yellow("no cases to run, exit.")
-      return
+      @return_message = "no cases to run, exit."
+      puts yellow(@return_message)
+      return @return_message
     end
 
     pbar = ProgressBar.new("0/#{@queue.size}", @queue.size, $stdout)
@@ -179,13 +188,13 @@ class Rspec_parallel
     #CI: true - update ; default: false - new file
     generate_reports(end_time - start_time, rerun && single_report)
 
+    @return_message
   end
 
   def get_case_list
     case_folder = @options[:case_folder]
-    file_list = `grep -rl '' #{case_folder}`
     case_list = []
-    file_list.each_line { |filename|
+    Find.find(case_folder) { |filename|
       unless filename.include? "_spec.rb"
         next
       end
@@ -388,7 +397,7 @@ class Rspec_parallel
   end
 
   def parse_case_log(str)
-    return nil if str =~ /0 examples/
+    return nil unless str =~ /1 example/
     result = {}
     logs = []
     str.each_line {|l| logs << l}
