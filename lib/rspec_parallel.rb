@@ -26,8 +26,8 @@ class RspecParallel
   def initialize(options = {})
     @options = {:thread_number => 4, :case_folder => "./spec/", :report_folder => "./reports/",
                 :filter => {}, :env_list => [], :show_pending => false, :rerun => false,
-                :single_report => false, :max_rerun_times => 10, :max_thread_number => 16,
-                :longevity_time => 0}.merge(options)
+                :single_report => false, :random_order => false, :random_seed => nil,
+                :max_rerun_times => 10, :max_thread_number => 16, :longevity_time => 0}.merge(options)
     @thread_number = @options[:thread_number]
     @max_rerun_times = @options[:max_rerun_times]
     @max_thread_number = @options[:max_thread_number]
@@ -313,6 +313,8 @@ class RspecParallel
       tags_filter_list = pattern_filter_list
     end
 
+    tags_filter_list = random_tests(tags_filter_list) if @options[:random_order]
+
     tags_filter_list = reorder_tests(tags_filter_list)
 
     tags_filter_list.each { |t|
@@ -382,6 +384,22 @@ class RspecParallel
     end
 
     output
+  end
+
+  def random_tests(case_list)
+    if @options[:random_seed]
+      seed = @options[:random_seed].to_i
+    else
+      seed = Time.now.to_i
+    end
+    puts yellow("running tests randomly with the seed: #{seed}")
+    rand_num = Random.new(seed)
+
+    random_case_list = []
+    case_list.sort_by { rand_num.rand }.each do |c|
+      random_case_list << c
+    end
+    random_case_list
   end
 
   def reorder_tests(case_list)
