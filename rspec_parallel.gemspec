@@ -12,4 +12,5 @@ Gem::Specification.new do |s|
 
   s.files        = `git ls-files`.split("\n")
   s.add_dependency('progressbar', '>=0.11.0')
+  s.add_dependency('nokogiri', '>=1.5.2')
 end
