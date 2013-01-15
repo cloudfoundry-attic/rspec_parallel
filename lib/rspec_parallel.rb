@@ -7,8 +7,10 @@ require 'nokogiri'
 
 require 'rspec_parallel/color_helper'
 require 'rspec_parallel/version'
+require 'rspec_parallel/report_helper'
 include RParallel
-include RParallel::ColorHelpers
+include RParallel::ColorHelper
+include RParallel::ReportHelper
 
 class RspecParallel
 
@@ -19,19 +21,16 @@ class RspecParallel
   attr_reader         :interrupted
 
   attr_accessor       :thread_number
-  attr_accessor       :max_rerun_times
   attr_accessor       :max_thread_number
 
   def initialize(options = {})
     @options = {:thread_number => 4, :case_folder => "./spec/", :report_folder => "./reports/",
                 :filter => {}, :env_list => [], :show_pending => false, :rerun => false,
                 :single_report => false, :random_order => false, :random_seed => nil,
-                :max_rerun_times => 10, :max_thread_number => 16, :longevity_time => 0}.merge(options)
+                :max_thread_number => 16, :longevity => 0}.merge(options)
     @thread_number = @options[:thread_number]
-    @max_rerun_times = @options[:max_rerun_times]
     @max_thread_number = @options[:max_thread_number]
 
-    @longevity = @options[:longevity_time]
     @case_number = 0
     @failure_number = 0
     @pending_number = 0
@@ -61,21 +60,14 @@ class RspecParallel
     single_report = @options[:single_report]
 
     if !single_report && rerun
-      @report_folder = get_single_folder("rerun", true)
+      @report_folder = get_report_folder(@options[:report_folder], true)
     end
 
     @report_folder = @options[:report_folder] if @report_folder.nil?
 
-    if @report_folder.include? "rerun#{@max_rerun_times + 1}"
-      @return_message = "rerun task has been executed for #{@max_rerun_times}" +
-                        " times, maybe you should start a new run"
-      puts yellow(@return_message)
-      return @return_message
-    end
-
     filter = @options[:filter]
     if rerun
-      get_failed_cases
+      @queue = get_failed_cases(@options[:report_folder], single_report)
     else
       parse_case_list(filter)
     end
@@ -185,8 +177,8 @@ class RspecParallel
       end
     end
 
-    #CI: true - update ; default: false - new file
-    generate_reports(end_time - start_time, rerun && single_report)
+    # CI: true - update ; default: false - new file
+    generate_reports(@report_folder, end_time - start_time, @case_info_list, @options)
 
     @return_message
   end
@@ -322,55 +314,6 @@ class RspecParallel
     }
   end
 
-  def get_single_folder(folder_prefix, get_next=false)
-    report_folder = @options[:report_folder]
-    i = 0
-    if folder_prefix == "rerun"
-      folders = Dir.glob("#{report_folder}/rerun*").sort
-      unless folders.nil? || folders == []
-        i = folders.last.split("rerun",2).last.to_i
-      end
-    end
-
-    if get_next
-      i = i+1
-    end
-
-    if i == 0
-      return report_folder
-    end
-
-    folder = File.join(report_folder, folder_prefix+"#{i.to_s}")
-
-  end
-
-  def get_failed_cases
-    if !@options[:single_report]
-      last_report_folder = get_single_folder("rerun", false)
-      last_report_file_path = File.join(last_report_folder, "junitResult.xml")
-    else
-      last_report_file_path = File.join(@report_folder, "junitResult.xml")
-    end
-    unless File.exists? last_report_file_path
-      puts yellow("can't find result of last run")
-      exit(1)
-    end
-    begin
-      @doc = Nokogiri::XML(open(last_report_file_path))
-    rescue
-      puts red("invalid format of report xml")
-      exit(1)
-    end
-
-    @doc.xpath("//result/suites/suite/cases/case").each do |c|
-      unless c.xpath(".//errorDetails").empty?
-        rerun_cmd = c.xpath(".//rerunCommand").text
-        line = rerun_cmd.split('#')[0].gsub('rspec ', '').strip
-        @queue << line
-      end
-    end
-  end
-
   def run_task(task, env_extras)
     cmd = [] # Preparing command for popen
     cmd << ENV.to_hash.merge(env_extras)
@@ -502,229 +445,4 @@ class RspecParallel
     result
   end
 
-  def generate_reports(time, update_report)
-    %x[mkdir #{@report_folder}] unless File.exists? @report_folder
-
-    report_file_path = File.join(@report_folder, 'junitResult.xml')
-    if @longevity > 1 && @options[:single_report]
-       summarydoc = Nokogiri::XML(open(report_file_path, 'r')) do |config|
-         config.default_xml.noblanks
-       end
-       summarydoc.search("//result/duration").remove
-       summarydoc.search("//result/keepLongStdio").remove
-    elsif not update_report
-      builder = Nokogiri::XML::Builder.new("encoding" => 'UTF-8') do |xml|
-        xml.result (:target => @target){
-          xml.suites
-        }
-      end
-      summarydoc = builder.doc
-    end
-
-    class_name_list = []
-    @case_info_list.each do |case_info|
-      class_name = case_info['class_name']
-      class_name_list << class_name
-    end
-    class_name_list.uniq!
-    class_name_list.sort!
-    class_name_list.each do |class_name|
-      temp_case_info_list = []
-      @case_info_list.each do |case_info|
-        if case_info['class_name'] == class_name
-          temp_case_info_list << case_info
-        end
-      end
-      #CI: should insert into file while single_report == true
-      is_update = @longevity > 1 && @options[:single_report]
-      generate_single_file_report(temp_case_info_list, is_update, summarydoc.at("//result/suites"))
-    end
-
-    if update_report
-      update_ci_report
-      fr = File.new(report_file_path, 'w')
-      fr.puts @doc.to_xml(:indent => 2)
-      fr.close
-    end
-
-    Nokogiri::XML::Builder.with(summarydoc.at("//result")) do |xml|
-      xml.duration time
-      xml.keepLongStdio "false"
-    end
-
-    fr = File.new(report_file_path, 'w')
-    fr.puts summarydoc.to_xml(:indent => 2)
-    fr.close
-  end
-
-  def update_ci_report
-    @doc.xpath("//result/suites/suite/cases/case").each do |c1|
-      unless c1.xpath(".//errorDetails").empty?
-        test_name = c1.at_xpath(".//testName").text
-        @case_info_list.each do |c2|
-          if test_name == c2['test_name'].encode({:xml => :attr})
-            c1.at_xpath(".//duration").text = c2['duration']
-            if c2['status'] == 'fail'
-              text = c2['error_message'].gsub('Failure/Error: ', '') + "\n"
-              text += c2['error_stack_trace'].gsub('# ', '')
-              c1.at_xpath(".//errorStackTrace").text = text
-              c1.at_xpath(".//errorDetails").text = c2['error_details']
-              c1.at_xpath(".//rerunCommand").text = c2['rerun_cmd']
-            else
-              c1.search(".//errorDetails").remove
-              c1.search(".//errorStackTrace").remove
-              c1.search(".//rerunCommand").remove
-            end
-            break
-          end
-        end
-      end
-    end
-  end
-
-  def generate_single_file_report(case_info_list, is_update, suites_doc)
-    return if case_info_list == []
-    class_name = case_info_list[0]['class_name']
-    file_name = File.join(@report_folder, class_name.gsub(/:+/, '-') + '.xml')
-    name = class_name.gsub(':', '_')
-
-    suite_duration = 0.0
-    fail_num = 0
-    error_num = 0
-    pending_num = 0
-    stdout = ''
-    stderr = ''
-    stdout_list = []
-    stderr_list = []
-    case_desc_list = []
-    case_info_list.each do |case_info|
-      suite_duration += case_info['duration']
-      stdout_list << case_info['stdout']
-      stderr_list << case_info['stderr']
-      case_desc_list << case_info['test_desc']
-      if case_info['status'] == 'fail'
-        if case_info['error_message'].include? "expect"
-          fail_num += 1
-        else
-          error_num += 1
-        end
-      elsif case_info['status'] == 'pending'
-        pending_num += 1
-      end
-    end
-    stdout_list.uniq!
-    stderr_list.uniq!
-    case_desc_list.sort!
-    stdout_list.each {|s| stdout += s}
-    stderr_list.each {|s| stderr += s}
-
-    suite_builder = Nokogiri::XML::Builder.with(suites_doc) do |xml|
-      xml.suite {
-        xml.file file_name
-        xml.name name
-        if stdout.length > 0
-          xml.stdout stdout
-        else
-          xml.stdout ""
-        end
-        if stderr.length > 0
-          xml.stderr stderr
-        else
-          xml.stderr ""
-        end
-        xml.duration suite_duration
-        xml.cases
-      }
-    end
-
-    if is_update == true
-      # update the testcase to the same report
-      single_report = Nokogiri::XML(open(file_name)) do |config|
-        config.default_xml.noblanks
-      end
-      # delete 'system-out' and 'system-err', using the new one
-      single_report.search("//system-out").remove
-      single_report.search("//system-err").remove
-    else
-      builder = Nokogiri::XML::Builder.new(:encoding => 'UTF-8') do |xml|
-        xml.testsuite(:name  => class_name,
-                      :tests => case_info_list.size,
-                      :time  => suite_duration,
-                      :failures=> fail_num,
-                      :errors  => error_num,
-                      :skipped => pending_num)
-      end
-      single_report = builder.doc
-    end
-
-    case_desc_list.each do |case_desc|
-      i = case_info_list.index {|c| c['test_desc'] == case_desc}
-      case_info = case_info_list[i]
-      if @longevity == 0
-        test_name = case_info['test_name']
-      else
-        test_name = "#{@longevity}-"+case_info['test_name']
-      end
-      test_name += " (PENDING)" if case_info['status'] == 'pending'
-      test_name = test_name.encode({:xml => :attr})
-      if case_info['status'] == 'fail'
-        if case_info['error_message'].include? "expected"
-          type = "RSpec::Expectations::ExpectationNotMetError"
-        elsif case_info['error_message'].include? "RuntimeError"
-          type = "RuntimeError"
-        else
-          type = "UnknownError"
-        end
-      end
-      # add new case into suite report for summary report
-      Nokogiri::XML::Builder.with(suite_builder.doc.at("//cases")) do |xml|
-        xml.case {
-          xml.duration case_info['duration']
-          xml.className class_name
-          xml.testName test_name
-          xml.skipped case_info['status'] == 'pending'
-          if case_info['status'] == 'fail'
-            xml.errorStackTrace  {
-              xml.text case_info['error_message'].gsub('Failure/Error: ', '')
-              xml.text case_info['error_stack_trace'].gsub('# ', '')
-            }
-            xml.errorDetails case_info['error_details']
-            xml.rerunCommand case_info['rerun_cmd']
-          end
-          xml.failedSince '0'
-        }
-      end
-
-      # add new case into single report
-      Nokogiri::XML::Builder.with(single_report.at("testsuite")) do |xml|
-        xml.testcase(:name => test_name, :time => case_info['duration']) {
-          if case_info['status'] == 'pending'
-            xml.skipped
-          elsif case_info['status'] == 'fail'
-            xml.failure(:type => type, :message => case_info['error_details']) {
-              xml.text case_info['error_message'].gsub('Failure/Error: ', '')
-              xml.text case_info['error_stack_trace'].gsub('# ', '')
-            }
-            xml.rerunCommand case_info['rerun_cmd']
-          end
-        }
-      end
-    end
-
-    Nokogiri::XML::Builder.with(single_report.at("testsuite")) do |xml|
-      if stdout.length > 0
-        xml.send(:'system-out', stdout)
-      else
-        xml.send(:'system-out', "")
-      end
-      if stderr.length > 0
-        xml.send(:'system-err', stderr)
-      else
-        xml.send(:'system-err', "")
-      end
-    end
-    ff = File.new(file_name, 'w')
-    ff.puts single_report.to_xml(:indent => 2)
-    ff.close
-  end
 end
