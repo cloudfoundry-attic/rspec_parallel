@@ -1,6 +1,6 @@
 # Displaying text in color
 module RParallel
-  module ColorHelpers
+  module ColorHelper
 
     def red(text)
       "\e[31m#{text}\e[0m"
