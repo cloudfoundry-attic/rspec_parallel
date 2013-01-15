@@ -36,6 +36,7 @@ class RspecParallel
     @failure_number = 0
     @pending_number = 0
     @interrupted = false
+    @target = @options[:target]
   end
 
   def run_tests()
@@ -513,7 +514,7 @@ class RspecParallel
        summarydoc.search("//result/keepLongStdio").remove
     elsif not update_report
       builder = Nokogiri::XML::Builder.new("encoding" => 'UTF-8') do |xml|
-        xml.result {
+        xml.result (:target => @target){
           xml.suites
         }
       end
